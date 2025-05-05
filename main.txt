@@ -1,0 +1,162 @@
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 4.16"
+    }
+    random = {
+        source  = "hashicorp/random"
+        version = "~> 3.0"
+      }
+  }
+
+  required_version = ">= 1.2.0"
+}
+
+provider "aws" {
+  region  = "us-west-2"
+}
+
+resource "aws_sns_topic" "upload_pictures" {
+  name = "upload_pictures"
+}
+
+resource "aws_sqs_queue" "subscribe_picture" {
+  name = "subscribe_picture"
+}
+
+resource "random_id" "bucket_suffix" {
+    byte_length = 8
+  }
+
+resource "aws_s3_bucket" "picture_bucket" {
+  bucket = "picture_bucket-${random_id.bucket_suffix.hex}"
+}
+
+resource "aws_s3_bucket_notification" "bucket_notification" {
+  bucket = aws_s3_bucket.picture_bucket.id
+
+  topic {
+    topic_arn     = aws_sns_topic.upload_pictures.arn
+    events        = ["s3:ObjectCreated:*"]
+  }
+}
+
+resource "aws_s3_bucket" "output_bucket" {
+  bucket = "output_bucket-${random_id.bucket_suffix.hex}"
+}
+
+resource "aws_sns_topic_subscription" "subscription" {
+  topic_arn = aws_sns_topic.upload_pictures.arn
+  protocol  = "sqs"
+  endpoint  = aws_sqs_queue.subscribe_picture.arn
+}
+
+data "archive_file" "lambda" {
+  type        = "zip"
+  source_file = "lambda_function.js" # Your Lambda code file
+  output_path = "lambda_function.zip"
+}
+
+resource "aws_lambda_function" "lambda_function" {
+  filename         = "lambda_function.zip"
+  function_name = "lambda_function"
+  role          = aws_iam_role.lambda_role.arn
+  handler       = "lambda_function.lambda_handler"
+  timeout = 60
+
+  source_code_hash = data.archive_file.lambda.output_base64sha256
+
+  runtime = "nodejs18.x"
+
+  environment {
+    variables = {
+      OUTPUT_BUCKET = aws_s3_bucket.output_bucket.id
+    }
+  }
+}
+
+resource "aws_sqs_queue_policy" "allow_sns" {
+  queue_url = aws_sqs_queue.subscribe_picture.id
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Effect    = "Allow",
+      Principal = "*",
+      Action    = "sqs:SendMessage",
+      Resource  = aws_sqs_queue.subscribe_picture.arn,
+      Condition = {
+        ArnEquals = {
+          "aws:SourceArn" = aws_sns_topic.upload_pictures.arn
+        }
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role" "lambda_role" {
+  name = "lambda_role"
+
+  assume_role_policy = jsonencode({
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "lambda.amazonaws.com"
+        }
+      }
+    ]
+    Version = "2012-10-17"
+  })
+}
+
+resource "aws_lambda_event_source_mapping" "sqs_trigger" {
+  event_source_arn = aws_sqs_queue.subscribe_picture.arn
+  function_name    = aws_lambda_function.lambda_function.arn
+  batch_size       = 1
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_basic_execution" {
+  role       = aws_iam_role.lambda_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy" "role-s3" {
+  name = "role-s3"
+  role = aws_iam_role.lambda_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject"
+        ]
+        Effect   = "Allow"
+        Resource = "*"
+      },
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "role-sqs" {
+  name = "role-sqs"
+  role = aws_iam_role.lambda_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = [
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes"
+        ]
+        Effect   = "Allow"
+        Resource = "*"
+      },
+    ]
+  })
+}
