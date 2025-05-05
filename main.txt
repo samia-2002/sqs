@@ -30,7 +30,7 @@ resource "random_id" "bucket_suffix" {
   }
 
 resource "aws_s3_bucket" "picture_bucket" {
-  bucket = "picture_bucket-${random_id.bucket_suffix.hex}"
+  bucket = "picture-bucket-${random_id.bucket_suffix.hex}"
 }
 
 resource "aws_s3_bucket_notification" "bucket_notification" {
@@ -43,7 +43,7 @@ resource "aws_s3_bucket_notification" "bucket_notification" {
 }
 
 resource "aws_s3_bucket" "output_bucket" {
-  bucket = "output_bucket-${random_id.bucket_suffix.hex}"
+  bucket = "output-bucket-${random_id.bucket_suffix.hex}"
 }
 
 resource "aws_sns_topic_subscription" "subscription" {
